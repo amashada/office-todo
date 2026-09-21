@@ -13,7 +13,6 @@ import {
   doc 
 } from 'firebase/firestore';
 
-// Default Admin user if users collection is empty
 const INITIAL_ADMIN = { 
   name: 'Admin', 
   role: 'admin', 
@@ -24,19 +23,21 @@ const INITIAL_ADMIN = {
 export default function App() {
   const [users, setUsers] = useState([]);
   const [tasks, setTasks] = useState([]);
-  const [currentUser, setCurrentUser] = useState(null);
 
-  // Form States
+  // AUTO LOGOUT NATHI KIRIMA: LocalStorage eken restore karagannawa
+  const [currentUser, setCurrentUser] = useState(() => {
+    const savedUser = localStorage.getItem('office_current_user');
+    return savedUser ? JSON.parse(savedUser) : null;
+  });
+
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
 
-  // Admin: Create User Form
   const [newEmpName, setNewEmpName] = useState('');
   const [newEmpUsername, setNewEmpUsername] = useState('');
   const [newEmpPassword, setNewEmpPassword] = useState('');
 
-  // Admin: Create Task Form
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDesc, setTaskDesc] = useState('');
   const [assigneeId, setAssigneeId] = useState('');
@@ -44,13 +45,19 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState('tasks');
 
-  // --- Real-time Listeners from Firestore ---
+  // Save current login user state to LocalStorage
   useEffect(() => {
-    // 1. Listen to 'users' collection
+    if (currentUser) {
+      localStorage.setItem('office_current_user', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('office_current_user');
+    }
+  }, [currentUser]);
+
+  // Firebase Realtime Sync
+  useEffect(() => {
     const unsubscribeUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
       const userList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
-      // If no users exist yet in database, create initial Admin
       if (userList.length === 0) {
         addDoc(collection(db, 'users'), INITIAL_ADMIN);
       } else {
@@ -58,7 +65,6 @@ export default function App() {
       }
     });
 
-    // 2. Listen to 'tasks' collection
     const unsubscribeTasks = onSnapshot(collection(db, 'tasks'), (snapshot) => {
       const taskList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setTasks(taskList);
@@ -70,7 +76,6 @@ export default function App() {
     };
   }, []);
 
-  // --- Auth Handlers ---
   const handleLogin = (e) => {
     e.preventDefault();
     const user = users.find(u => u.username === loginUsername && u.password === loginPassword);
@@ -88,7 +93,6 @@ export default function App() {
     setCurrentUser(null);
   };
 
-  // --- Admin Actions ---
   const handleCreateEmployee = async (e) => {
     e.preventDefault();
     if (!newEmpName || !newEmpUsername || !newEmpPassword) return;
@@ -108,10 +112,9 @@ export default function App() {
       setNewEmpName('');
       setNewEmpUsername('');
       setNewEmpPassword('');
-      alert('Employee account created successfully on Cloud!');
+      alert('Employee account created successfully!');
     } catch (error) {
       console.error("Error creating user: ", error);
-      alert("Error creating user!");
     }
   };
 
@@ -154,7 +157,6 @@ export default function App() {
     }
   };
 
-  // --- Employee Actions ---
   const handleStartTask = async (taskId) => {
     try {
       const taskRef = doc(db, 'tasks', taskId);
@@ -179,11 +181,19 @@ export default function App() {
     }
   };
 
+  // Safe File Upload Processing
   const handleFileUpload = async (taskId, currentFiles, e) => {
     const uploadedFiles = Array.from(e.target.files);
     if (!uploadedFiles.length) return;
 
-    // Convert small files to Base64/DataURL format for cloud storage demo
+    // Check File Sizes (Warn if file > 1MB for Firestore text limits)
+    for (let file of uploadedFiles) {
+      if (file.size > 1048576) {
+        alert(`File "${file.name}" is too large! Please upload files/videos smaller than 1MB for smooth sync.`);
+        return;
+      }
+    }
+
     const fileObjects = await Promise.all(uploadedFiles.map(file => {
       return new Promise((resolve) => {
         const reader = new FileReader();
@@ -191,6 +201,7 @@ export default function App() {
           resolve({
             name: file.name,
             size: (file.size / 1024).toFixed(1) + ' KB',
+            type: file.type,
             url: reader.result
           });
         };
@@ -205,10 +216,10 @@ export default function App() {
       });
     } catch (error) {
       console.error("Error uploading file: ", error);
+      alert("Failed to upload file to Cloud. Check file size.");
     }
   };
 
-  // Helper
   const getDueStatus = (dueDateStr, status) => {
     if (status === 'Completed') return null;
     const due = new Date(dueDateStr);
@@ -222,7 +233,6 @@ export default function App() {
     return null;
   };
 
-  // --- Render Login Screen ---
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 font-sans">
@@ -231,7 +241,7 @@ export default function App() {
             <div className="bg-indigo-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-indigo-200">
               <Shield className="w-8 h-8 text-white" />
             </div>
-            <h1 className="text-2xl font-bold text-slate-800">Firebase Cloud Dashboard</h1>
+            <h1 className="text-2xl font-bold text-slate-800">Office Dashboard Login</h1>
             <p className="text-slate-500 text-sm mt-1">Please sign in to access your portal</p>
           </div>
 
@@ -284,7 +294,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-12">
-      {/* Top Navbar */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -317,10 +326,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Container */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
-        
-        {/* ADMIN TAB NAVIGATION */}
         {currentUser.role === 'admin' && (
           <div className="flex gap-4 mb-6">
             <button 
@@ -339,7 +345,6 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 1: MANAGE USERS */}
         {currentUser.role === 'admin' && activeTab === 'users' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-fit">
@@ -419,7 +424,6 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 2: MANAGE TASKS */}
         {(currentUser.role !== 'admin' || activeTab === 'tasks') && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {currentUser.role === 'admin' && (
@@ -555,7 +559,6 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* ADMIN ONLY: Timestamps */}
                         {currentUser.role === 'admin' && (
                           <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-3 text-xs space-y-1">
                             <div className="text-indigo-900 font-semibold mb-1 flex items-center gap-1">
@@ -573,7 +576,6 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* EMPLOYEE ACTIONS */}
                         {currentUser.role === 'employee' && (
                           <div className="flex gap-2 border-t pt-3">
                             {task.status === 'Pending' && (
@@ -606,18 +608,22 @@ export default function App() {
                               Attached Deliverables ({task.files?.length || 0})
                             </span>
 
-                            <label className="cursor-pointer text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors">
-                              <FileUp className="w-3.5 h-3.5" />
-                              Upload File
-                              <input 
-                                type="file" 
-                                multiple
-                                className="hidden" 
-                                onChange={(e) => handleFileUpload(task.id, task.files, e)} 
-                              />
-                            </label>
+                            {/* FILE UPLOAD BUTTON IS HIDDEN FOR ADMIN */}
+                            {currentUser.role === 'employee' && (
+                              <label className="cursor-pointer text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors">
+                                <FileUp className="w-3.5 h-3.5" />
+                                Upload File
+                                <input 
+                                  type="file" 
+                                  multiple
+                                  className="hidden" 
+                                  onChange={(e) => handleFileUpload(task.id, task.files, e)} 
+                                />
+                              </label>
+                            )}
                           </div>
 
+                          {/* Render Uploaded Files & Videos */}
                           {task.files && task.files.length > 0 && (
                             <div className="flex flex-wrap gap-2 mt-2">
                               {task.files.map((file, idx) => (
@@ -625,10 +631,12 @@ export default function App() {
                                   key={idx}
                                   href={file.url}
                                   download={file.name}
+                                  target="_blank"
+                                  rel="noreferrer"
                                   className="bg-slate-50 border border-slate-200 hover:border-indigo-300 px-2.5 py-1.5 rounded-lg text-xs flex items-center gap-2 group transition-all"
                                 >
                                   <FileText className="w-3.5 h-3.5 text-indigo-500" />
-                                  <span className="font-medium text-slate-700 group-hover:text-indigo-600 truncate max-w-[120px]">{file.name}</span>
+                                  <span className="font-medium text-slate-700 group-hover:text-indigo-600 truncate max-w-[150px]">{file.name}</span>
                                   <span className="text-[10px] text-slate-400">{file.size}</span>
                                 </a>
                               ))}

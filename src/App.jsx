@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { 
   CheckCircle, Clock, AlertTriangle, FileText, Plus, Users, 
-  LogOut, Shield, User, Play, Check, FileUp, Trash2, KeyRound, X, Loader2 
+  LogOut, Shield, User, Play, Check, FileUp, Trash2, KeyRound, X, Loader2,
+  Crown, Activity, ShieldAlert
 } from 'lucide-react';
 import { db } from './firebase';
 import { 
@@ -10,12 +11,16 @@ import {
   addDoc, 
   updateDoc, 
   deleteDoc, 
-  doc 
+  doc,
+  query,
+  orderBy,
+  limit
 } from 'firebase/firestore';
 
-const INITIAL_ADMIN = { 
-  name: 'Admin', 
-  role: 'admin', 
+// Initial Super Admin (You)
+const INITIAL_SUPER_ADMIN = { 
+  name: 'Amashada Navoda', 
+  role: 'super_admin', 
   username: 'admin', 
   password: '123' 
 };
@@ -23,6 +28,7 @@ const INITIAL_ADMIN = {
 export default function App() {
   const [users, setUsers] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [logs, setLogs] = useState([]);
   const [isUploading, setIsUploading] = useState({});
 
   const [currentUser, setCurrentUser] = useState(() => {
@@ -37,6 +43,7 @@ export default function App() {
   const [newEmpName, setNewEmpName] = useState('');
   const [newEmpUsername, setNewEmpUsername] = useState('');
   const [newEmpPassword, setNewEmpPassword] = useState('');
+  const [newEmpRole, setNewEmpRole] = useState('employee');
 
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDesc, setTaskDesc] = useState('');
@@ -53,13 +60,19 @@ export default function App() {
     }
   }, [currentUser]);
 
+  // Load Users, Tasks & System Logs
   useEffect(() => {
     const unsubscribeUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
       const userList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       if (userList.length === 0) {
-        addDoc(collection(db, 'users'), INITIAL_ADMIN);
+        addDoc(collection(db, 'users'), INITIAL_SUPER_ADMIN);
       } else {
         setUsers(userList);
+        // Refresh local current user if role/data updated in DB
+        if (currentUser) {
+          const updatedSelf = userList.find(u => u.id === currentUser.id);
+          if (updatedSelf) setCurrentUser(updatedSelf);
+        }
       }
     });
 
@@ -68,11 +81,33 @@ export default function App() {
       setTasks(taskList);
     });
 
+    const unsubscribeLogs = onSnapshot(collection(db, 'logs'), (snapshot) => {
+      const logList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      logList.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      setLogs(logList);
+    });
+
     return () => {
       unsubscribeUsers();
       unsubscribeTasks();
+      unsubscribeLogs();
     };
   }, []);
+
+  // Helper to log system activity
+  const logActivity = async (action, details) => {
+    try {
+      await addDoc(collection(db, 'logs'), {
+        userName: currentUser?.name || 'System',
+        userRole: currentUser?.role || 'system',
+        action,
+        details,
+        timestamp: new Date().toISOString()
+      });
+    } catch (err) {
+      console.error("Log error:", err);
+    }
+  };
 
   const handleLogin = (e) => {
     e.preventDefault();
@@ -82,16 +117,18 @@ export default function App() {
       setLoginError('');
       setLoginUsername('');
       setLoginPassword('');
+      logActivity('User Login', `${user.name} (${user.role}) logged in`);
     } else {
       setLoginError('Invalid Username or Password!');
     }
   };
 
   const handleLogout = () => {
+    if (currentUser) logActivity('User Logout', `${currentUser.name} logged out`);
     setCurrentUser(null);
   };
 
-  const handleCreateEmployee = async (e) => {
+  const handleCreateUser = async (e) => {
     e.preventDefault();
     if (!newEmpName || !newEmpUsername || !newEmpPassword) return;
 
@@ -103,16 +140,50 @@ export default function App() {
     try {
       await addDoc(collection(db, 'users'), {
         name: newEmpName,
-        role: 'employee',
+        role: newEmpRole,
         username: newEmpUsername,
         password: newEmpPassword
       });
+
+      logActivity('Create User', `Created ${newEmpRole} account for ${newEmpName}`);
+
       setNewEmpName('');
       setNewEmpUsername('');
       setNewEmpPassword('');
-      alert('Employee account created successfully!');
+      setNewEmpRole('employee');
+      alert(`Account (${newEmpRole.toUpperCase()}) created successfully!`);
     } catch (error) {
       console.error("Error creating user: ", error);
+    }
+  };
+
+  // Change User Role (Super Admin Only)
+  const handleChangeUserRole = async (userId, targetUserName, newRole) => {
+    if (userId === currentUser.id) {
+      alert("You cannot change your own Super Admin role!");
+      return;
+    }
+    try {
+      await updateDoc(doc(db, 'users', userId), { role: newRole });
+      logActivity('Role Change', `Changed ${targetUserName}'s role to ${newRole}`);
+    } catch (error) {
+      console.error("Error updating role:", error);
+    }
+  };
+
+  // Delete User Account (Super Admin Only)
+  const handleDeleteUser = async (userId, targetUserName) => {
+    if (userId === currentUser.id) {
+      alert("You cannot delete your own account!");
+      return;
+    }
+    if (window.confirm(`Are you sure you want to delete account: ${targetUserName}?`)) {
+      try {
+        await deleteDoc(doc(db, 'users', userId));
+        logActivity('Delete User', `Deleted user account: ${targetUserName}`);
+      } catch (error) {
+        console.error("Error deleting user:", error);
+      }
     }
   };
 
@@ -136,6 +207,8 @@ export default function App() {
         createdAt: new Date().toISOString()
       });
 
+      logActivity('Create Task', `Assigned task "${taskTitle}" to ${assignee.name}`);
+
       setTaskTitle('');
       setTaskDesc('');
       setAssigneeId('');
@@ -145,42 +218,53 @@ export default function App() {
     }
   };
 
-  const handleDeleteTask = async (taskId) => {
-    if (window.confirm('Are you sure you want to delete this task?')) {
+  // Delete Task (Super Admin Only)
+  const handleDeleteTask = async (taskId, title) => {
+    if (currentUser.role !== 'super_admin') {
+      alert('Only Super Admin has permission to permanently delete tasks!');
+      return;
+    }
+
+    if (window.confirm(`Permanently delete task "${title}"?`)) {
       try {
         await deleteDoc(doc(db, 'tasks', taskId));
+        logActivity('Delete Task', `Deleted task "${title}"`);
       } catch (error) {
         console.error("Error deleting task: ", error);
       }
     }
   };
 
-  const handleStartTask = async (taskId) => {
+  const handleStartTask = async (taskId, title) => {
     try {
       const taskRef = doc(db, 'tasks', taskId);
+      const timeStr = new Date().toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' });
       await updateDoc(taskRef, {
         status: 'In Progress',
-        startTime: new Date().toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' })
+        startTime: timeStr
       });
+      logActivity('Start Task', `Started task "${title}" at ${timeStr}`);
     } catch (error) {
       console.error("Error starting task: ", error);
     }
   };
 
-  const handleCompleteTask = async (taskId) => {
+  const handleCompleteTask = async (taskId, title) => {
     try {
       const taskRef = doc(db, 'tasks', taskId);
+      const timeStr = new Date().toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' });
       await updateDoc(taskRef, {
         status: 'Completed',
-        endTime: new Date().toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' })
+        endTime: timeStr
       });
+      logActivity('Complete Task', `Completed task "${title}" at ${timeStr}`);
     } catch (error) {
       console.error("Error completing task: ", error);
     }
   };
 
   // 🚀 CLOUDINARY FILE UPLOAD
-  const handleFileUpload = async (taskId, currentFiles, e) => {
+  const handleFileUpload = async (taskId, taskTitle, currentFiles, e) => {
     const uploadedFiles = Array.from(e.target.files);
     if (!uploadedFiles.length) return;
 
@@ -215,8 +299,10 @@ export default function App() {
           await updateDoc(taskRef, {
             files: [...existingFiles, newFileObj]
           });
+
+          logActivity('Upload File', `Uploaded "${file.name}" to task "${taskTitle}"`);
         } else {
-          alert('Upload failed. Please check Cloudinary Cloud Name & Preset!');
+          alert('Upload failed. Check Cloudinary Name & Preset!');
         }
       } catch (err) {
         console.error("Upload error:", err);
@@ -237,6 +323,7 @@ export default function App() {
       await updateDoc(taskRef, {
         files: updatedFiles
       });
+      logActivity('Delete File', `Deleted file "${fileToDelete.name}" from task`);
     } catch (error) {
       console.error("Error deleting file: ", error);
       alert("Failed to delete file.");
@@ -265,7 +352,7 @@ export default function App() {
               <div className="bg-indigo-600 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-indigo-200">
                 <Shield className="w-8 h-8 text-white" />
               </div>
-              <h1 className="text-2xl font-bold text-slate-800">WorkOps Dashboard Login</h1>
+              <h1 className="text-2xl font-bold text-slate-800">WorkOps Dashboard</h1>
               <p className="text-slate-500 text-sm mt-1">Please sign in to access your portal</p>
             </div>
 
@@ -306,7 +393,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* LOGIN SCREEN FOOTER */}
         <footer className="py-4 text-center text-xs text-slate-400">
           Designed & Developed by <span className="font-semibold text-slate-300">Amashada Navoda</span>
         </footer>
@@ -314,33 +400,38 @@ export default function App() {
     );
   }
 
-  const visibleTasks = currentUser.role === 'admin' 
+  const isManagement = currentUser.role === 'super_admin' || currentUser.role === 'admin';
+  const visibleTasks = isManagement 
     ? tasks 
     : tasks.filter(t => t.assigneeId === currentUser.id);
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-800 flex flex-col justify-between">
       <div>
-        <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
+        <header className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="bg-indigo-600 text-white p-2 rounded-xl">
                 <Shield className="w-5 h-5" />
               </div>
               <div>
-                <h1 className="font-bold text-slate-900 text-lg leading-tight">Team Task Dashboard</h1>
-                <p className="text-xs text-slate-500">Cloud Storage Enabled Portal</p>
+                <h1 className="font-bold text-slate-900 text-lg leading-tight">WorkOps Dashboard</h1>
+                <p className="text-xs text-slate-500">Enterprise Task Management Portal</p>
               </div>
             </div>
 
             <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full">
-                {currentUser.role === 'admin' ? (
+              <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-full border border-slate-200">
+                {currentUser.role === 'super_admin' ? (
+                  <Crown className="w-4 h-4 text-amber-500 fill-amber-500" />
+                ) : currentUser.role === 'admin' ? (
                   <Shield className="w-4 h-4 text-indigo-600" />
                 ) : (
                   <User className="w-4 h-4 text-emerald-600" />
                 )}
-                <span className="text-xs font-semibold text-slate-700">{currentUser.name} ({currentUser.role.toUpperCase()})</span>
+                <span className="text-xs font-semibold text-slate-700">
+                  {currentUser.name} ({currentUser.role === 'super_admin' ? 'SUPER ADMIN' : currentUser.role.toUpperCase()})
+                </span>
               </div>
               <button 
                 onClick={handleLogout}
@@ -354,34 +445,47 @@ export default function App() {
         </header>
 
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
-          {currentUser.role === 'admin' && (
-            <div className="flex gap-4 mb-6">
+          {/* TABS FOR MANAGEMENT */}
+          {isManagement && (
+            <div className="flex gap-3 mb-6 flex-wrap">
               <button 
                 onClick={() => setActiveTab('tasks')}
                 className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${activeTab === 'tasks' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200' : 'bg-white text-slate-600 border border-slate-200'}`}
               >
                 Task Management
               </button>
+
               <button 
                 onClick={() => setActiveTab('users')}
                 className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all ${activeTab === 'users' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200' : 'bg-white text-slate-600 border border-slate-200'}`}
               >
                 <Users className="w-4 h-4" />
-                Manage Employee Accounts
+                User Accounts
               </button>
+
+              {currentUser.role === 'super_admin' && (
+                <button 
+                  onClick={() => setActiveTab('logs')}
+                  className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all ${activeTab === 'logs' ? 'bg-amber-600 text-white shadow-md shadow-amber-200' : 'bg-white text-slate-600 border border-slate-200'}`}
+                >
+                  <Activity className="w-4 h-4" />
+                  Audit Logs (Super Admin)
+                </button>
+              )}
             </div>
           )}
 
-          {currentUser.role === 'admin' && activeTab === 'users' && (
+          {/* USER MANAGEMENT TAB */}
+          {isManagement && activeTab === 'users' && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-fit">
                 <h2 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
                   <KeyRound className="w-5 h-5 text-indigo-600" />
-                  Create Employee Login
+                  Create User Account
                 </h2>
-                <form onSubmit={handleCreateEmployee} className="space-y-4">
+                <form onSubmit={handleCreateUser} className="space-y-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">Employee Name</label>
+                    <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">Full Name</label>
                     <input 
                       type="text" required
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
@@ -390,6 +494,22 @@ export default function App() {
                       placeholder="e.g. Kasun Perera"
                     />
                   </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">Role Type</label>
+                    <select 
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
+                      value={newEmpRole}
+                      onChange={e => setNewEmpRole(e.target.value)}
+                    >
+                      <option value="employee">Employee (Limited Access)</option>
+                      <option value="admin">Leader / Admin (Task Assign Control)</option>
+                      {currentUser.role === 'super_admin' && (
+                        <option value="super_admin">Super Admin (Full System Control)</option>
+                      )}
+                    </select>
+                  </div>
+
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">Username</label>
                     <input 
@@ -400,6 +520,7 @@ export default function App() {
                       placeholder="e.g. kasun"
                     />
                   </div>
+
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">Password</label>
                     <input 
@@ -410,17 +531,19 @@ export default function App() {
                       placeholder="Assign password"
                     />
                   </div>
+
                   <button 
                     type="submit"
                     className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 rounded-lg text-sm transition-all shadow-md shadow-indigo-100"
                   >
-                    Create User Account
+                    Create Account
                   </button>
                 </form>
               </div>
 
+              {/* USER ACCOUNTS TABLE */}
               <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <h2 className="text-lg font-bold text-slate-900 mb-4">Cloud Database Accounts</h2>
+                <h2 className="text-lg font-bold text-slate-900 mb-4">System User Accounts</h2>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
                     <thead>
@@ -429,19 +552,51 @@ export default function App() {
                         <th className="pb-3">Role</th>
                         <th className="pb-3">Username</th>
                         <th className="pb-3">Password</th>
+                        {currentUser.role === 'super_admin' && <th className="pb-3 text-right">Actions</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-sm">
                       {users.map(u => (
                         <tr key={u.id} className="hover:bg-slate-50">
-                          <td className="py-3 font-medium text-slate-800">{u.name}</td>
+                          <td className="py-3 font-medium text-slate-800 flex items-center gap-1.5">
+                            {u.role === 'super_admin' && <Crown className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />}
+                            {u.name}
+                          </td>
                           <td className="py-3">
-                            <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${u.role === 'admin' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>
-                              {u.role.toUpperCase()}
-                            </span>
+                            {currentUser.role === 'super_admin' && u.id !== currentUser.id ? (
+                              <select 
+                                value={u.role}
+                                onChange={(e) => handleChangeUserRole(u.id, u.name, e.target.value)}
+                                className="text-xs border border-slate-200 rounded px-1.5 py-1 font-semibold"
+                              >
+                                <option value="employee">EMPLOYEE</option>
+                                <option value="admin">ADMIN / LEADER</option>
+                                <option value="super_admin">SUPER ADMIN</option>
+                              </select>
+                            ) : (
+                              <span className={`px-2 py-0.5 rounded-md text-xs font-semibold ${
+                                u.role === 'super_admin' ? 'bg-amber-100 text-amber-800 border border-amber-300' :
+                                u.role === 'admin' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'
+                              }`}>
+                                {u.role === 'super_admin' ? 'SUPER ADMIN' : u.role.toUpperCase()}
+                              </span>
+                            )}
                           </td>
                           <td className="py-3 text-slate-600 font-mono text-xs">{u.username}</td>
                           <td className="py-3 text-slate-600 font-mono text-xs">{u.password}</td>
+                          {currentUser.role === 'super_admin' && (
+                            <td className="py-3 text-right">
+                              {u.id !== currentUser.id && (
+                                <button 
+                                  onClick={() => handleDeleteUser(u.id, u.name)}
+                                  className="text-slate-300 hover:text-red-500 p-1"
+                                  title="Delete User Account"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
@@ -451,9 +606,48 @@ export default function App() {
             </div>
           )}
 
-          {(currentUser.role !== 'admin' || activeTab === 'tasks') && (
+          {/* AUDIT LOGS TAB (SUPER ADMIN ONLY) */}
+          {currentUser.role === 'super_admin' && activeTab === 'logs' && (
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+              <h2 className="text-lg font-bold text-slate-900 mb-1 flex items-center gap-2">
+                <Activity className="w-5 h-5 text-amber-600" />
+                System Activity Audit Trail
+              </h2>
+              <p className="text-xs text-slate-500 mb-4">Track all actions performed by Leaders and Employees in real-time.</p>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-xs text-slate-400 uppercase font-semibold">
+                      <th className="pb-3">Timestamp</th>
+                      <th className="pb-3">User</th>
+                      <th className="pb-3">Action</th>
+                      <th className="pb-3">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs font-mono">
+                    {logs.length === 0 ? (
+                      <tr><td colSpan="4" className="py-4 text-center text-slate-400">No activity logs recorded yet.</td></tr>
+                    ) : (
+                      logs.map(log => (
+                        <tr key={log.id} className="hover:bg-slate-50">
+                          <td className="py-2.5 text-slate-400">{new Date(log.timestamp).toLocaleString()}</td>
+                          <td className="py-2.5 font-semibold text-slate-700">{log.userName} ({log.userRole})</td>
+                          <td className="py-2.5 text-indigo-600 font-bold">{log.action}</td>
+                          <td className="py-2.5 text-slate-600">{log.details}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* TASK MANAGEMENT TAB */}
+          {(!isManagement || activeTab === 'tasks') && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              {currentUser.role === 'admin' && (
+              {isManagement && (
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-fit">
                   <h2 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
                     <Plus className="w-5 h-5 text-indigo-600" />
@@ -483,16 +677,16 @@ export default function App() {
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">Assign To Employee</label>
+                      <label className="block text-xs font-semibold text-slate-600 uppercase mb-1">Assign To</label>
                       <select 
                         required
                         className="w-full px-3 py-2 rounded-lg border border-slate-200 outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
                         value={assigneeId}
                         onChange={e => setAssigneeId(e.target.value)}
                       >
-                        <option value="">Select Employee</option>
-                        {users.filter(u => u.role === 'employee').map(emp => (
-                          <option key={emp.id} value={emp.id}>{emp.name}</option>
+                        <option value="">Select Assignee</option>
+                        {users.map(emp => (
+                          <option key={emp.id} value={emp.id}>{emp.name} ({emp.role.toUpperCase()})</option>
                         ))}
                       </select>
                     </div>
@@ -518,10 +712,10 @@ export default function App() {
                 </div>
               )}
 
-              <div className={currentUser.role === 'admin' ? 'lg:col-span-2' : 'lg:col-span-3'}>
+              <div className={isManagement ? 'lg:col-span-2' : 'lg:col-span-3'}>
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-bold text-slate-900">
-                    {currentUser.role === 'admin' ? 'All Team Tasks' : 'My Assigned Tasks'}
+                    {isManagement ? 'All Team Tasks' : 'My Assigned Tasks'}
                   </h2>
                   <span className="bg-slate-200 text-slate-700 text-xs font-bold px-2.5 py-1 rounded-full">
                     {visibleTasks.length} Total
@@ -556,11 +750,12 @@ export default function App() {
                               )}
                             </div>
 
-                            {currentUser.role === 'admin' && (
+                            {/* PERMANENT DELETE (SUPER ADMIN ONLY) */}
+                            {currentUser.role === 'super_admin' && (
                               <button 
-                                onClick={() => handleDeleteTask(task.id)}
+                                onClick={() => handleDeleteTask(task.id, task.title)}
                                 className="text-slate-300 hover:text-red-500 transition-colors p-1"
-                                title="Delete Task"
+                                title="Delete Task Permanently (Super Admin)"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -587,11 +782,11 @@ export default function App() {
                             </div>
                           </div>
 
-                          {currentUser.role === 'admin' && (
+                          {isManagement && (
                             <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-3 text-xs space-y-1">
                               <div className="text-indigo-900 font-semibold mb-1 flex items-center gap-1">
                                 <Clock className="w-3.5 h-3.5 text-indigo-600" />
-                                Cloud Work Tracking:
+                                Work Tracking Status:
                               </div>
                               <div className="grid grid-cols-2 gap-2 text-slate-600">
                                 <div>
@@ -604,29 +799,28 @@ export default function App() {
                             </div>
                           )}
 
-                          {currentUser.role === 'employee' && (
-                            <div className="flex gap-2 border-t pt-3">
-                              {task.status === 'Pending' && (
-                                <button 
-                                  onClick={() => handleStartTask(task.id)}
-                                  className="bg-amber-500 hover:bg-amber-600 text-white font-medium text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 transition-colors"
-                                >
-                                  <Play className="w-3.5 h-3.5 fill-current" />
-                                  Start Work Now
-                                </button>
-                              )}
+                          {/* TASK ACTION BUTTONS */}
+                          <div className="flex gap-2 border-t pt-3">
+                            {task.status === 'Pending' && (
+                              <button 
+                                onClick={() => handleStartTask(task.id, task.title)}
+                                className="bg-amber-500 hover:bg-amber-600 text-white font-medium text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 transition-colors"
+                              >
+                                <Play className="w-3.5 h-3.5 fill-current" />
+                                Start Work Now
+                              </button>
+                            )}
 
-                              {task.status === 'In Progress' && (
-                                <button 
-                                  onClick={() => handleCompleteTask(task.id)}
-                                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 transition-colors"
-                                >
-                                  <Check className="w-3.5 h-3.5" />
-                                  Mark Completed
-                                </button>
-                              )}
-                            </div>
-                          )}
+                            {task.status === 'In Progress' && (
+                              <button 
+                                onClick={() => handleCompleteTask(task.id, task.title)}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 transition-colors"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                Mark Completed
+                              </button>
+                            )}
+                          </div>
 
                           {/* FILES SECTION */}
                           <div className="border-t pt-3">
@@ -636,18 +830,16 @@ export default function App() {
                                 Attached Deliverables ({task.files?.length || 0})
                               </span>
 
-                              {currentUser.role === 'employee' && (
-                                <label className="cursor-pointer text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors">
-                                  <FileUp className="w-3.5 h-3.5" />
-                                  Upload File / Video
-                                  <input 
-                                    type="file" 
-                                    multiple
-                                    className="hidden" 
-                                    onChange={(e) => handleFileUpload(task.id, task.files, e)} 
-                                  />
-                                </label>
-                              )}
+                              <label className="cursor-pointer text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors">
+                                <FileUp className="w-3.5 h-3.5" />
+                                Upload File / Video
+                                <input 
+                                  type="file" 
+                                  multiple
+                                  className="hidden" 
+                                  onChange={(e) => handleFileUpload(task.id, task.title, task.files, e)} 
+                                />
+                              </label>
                             </div>
 
                             {/* UPLOADING INDICATOR */}
@@ -700,7 +892,6 @@ export default function App() {
         </main>
       </div>
 
-      {/* DASHBOARD FOOTER */}
       <footer className="mt-12 py-6 border-t border-slate-200 text-center text-xs text-slate-500">
         <p>
           Designed & Developed by <span className="font-semibold text-slate-800">Amashada Navoda</span>
